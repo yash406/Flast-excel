@@ -3,6 +3,4 @@ pandas
 python-dotenv
 openpyxl
 datetime
-os
-re
 gunicorn 
