@@ -1,0 +1,180 @@
+import os
+from flask import Flask, request, render_template, send_file, redirect, url_for, flash
+import pandas as pd
+import re
+from datetime import datetime
+
+app = Flask(__name__)
+app.secret_key = 'some_secret_key'
+
+UPLOAD_FOLDER = 'uploads'
+PROCESSED_FOLDER = 'processed'
+CSV_PATH = 'clients.csv'  # <-- CSV is already present here
+
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(PROCESSED_FOLDER, exist_ok=True)
+
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['PROCESSED_FOLDER'] = PROCESSED_FOLDER
+
+# Helper functions (same as before)
+def clean_phone_number(num):
+    if pd.isna(num):
+        return num
+    num_str = str(num).strip()
+    if 'e' in num_str.lower():
+        try:
+            num_str = str(int(float(num_str)))
+        except:
+            pass
+    num_str = re.sub(r'^\+91\s*', '', num_str)
+    return num_str.strip()
+
+def is_blank(val):
+    if pd.isna(val):
+        return True
+    if isinstance(val, str) and val.strip() == '':
+        return True
+    return False
+
+def blank_unnamed_headers(df):
+    new_columns = []
+    for col in df.columns:
+        if isinstance(col, str) and col.startswith('Unnamed'):
+            new_columns.append('')
+        else:
+            new_columns.append(col)
+    df.columns = new_columns
+
+@app.route('/', methods=['GET', 'POST'])
+def index():
+    if request.method == 'POST':
+        # User uploads multiple Excel files only
+        excel_files = request.files.getlist('excel_files')
+
+        if not excel_files or all(f.filename == '' for f in excel_files):
+            flash("Please upload at least one Excel file!")
+            return redirect(request.url)
+
+        # Save uploaded Excel files
+        excel_paths = []
+        for ef in excel_files:
+            if ef and ef.filename != '':
+                path = os.path.join(app.config['UPLOAD_FOLDER'], ef.filename)
+                ef.save(path)
+                excel_paths.append(path)
+
+        # Process the existing CSV + uploaded Excel files
+        processed_csv_path = process_files(CSV_PATH, excel_paths)
+
+        return send_file(processed_csv_path, as_attachment=True)
+
+    return render_template('index.html')
+
+def process_files(csv_file, excel_files):
+    # Same processing code as before, reading csv_file and excel_files paths
+    df_csv = pd.read_csv(csv_file, dtype=str)
+    blank_unnamed_headers(df_csv)
+    df_csv['Client Number'] = df_csv.get('Client Number', pd.Series(dtype=str)).apply(clean_phone_number)
+
+    excel_dataframes = []
+    for file in excel_files:
+        df_excel = pd.read_excel(file, engine='openpyxl', dtype=str)
+        blank_unnamed_headers(df_excel)
+        df_mapped = df_excel.rename(columns={
+            'full_name': 'Client Name',
+            'email': 'Client Email',
+            'phone_number': 'Client Number',
+            'city': 'Client Address'
+        })
+        available_cols = [col for col in ['Client Name', 'Client Email', 'Client Number', 'Client Address'] if col in df_mapped.columns]
+        df_mapped = df_mapped[available_cols]
+        if 'Client Number' in df_mapped.columns:
+            df_mapped['Client Number'] = df_mapped['Client Number'].apply(clean_phone_number)
+        excel_dataframes.append(df_mapped)
+
+    df_combined = pd.concat(excel_dataframes, ignore_index=True) if excel_dataframes else pd.DataFrame()
+
+    client_fields = ['Client Name', 'Client Email', 'Client Number', 'Client Address']
+
+    blank_rows_mask = df_csv[client_fields].applymap(is_blank).all(axis=1)
+    blank_row_indices = df_csv.index[blank_rows_mask].tolist()
+
+    idx_combined = 0
+    for idx in blank_row_indices:
+        if idx_combined < len(df_combined):
+            for col in client_fields:
+                if col in df_combined.columns:
+                    df_csv.at[idx, col] = df_combined.at[idx_combined, col]
+            idx_combined += 1
+        else:
+            break
+
+    if idx_combined < len(df_combined):
+        leftover = df_combined.iloc[idx_combined:]
+        extra_cols = [col for col in df_csv.columns if col not in client_fields]
+        extra_data = pd.DataFrame(index=leftover.index, columns=extra_cols)
+        new_rows = pd.concat([extra_data, leftover], axis=1)
+        df_csv = pd.concat([df_csv, new_rows], ignore_index=True)
+
+    last_client_idx = df_csv['Client Name'].last_valid_index()
+    today_str = datetime.today().strftime('%Y-%m-%d')
+    if last_client_idx is not None:
+        df_csv.loc[:last_client_idx, 'Lead Date'] = today_str
+
+    if last_client_idx is not None:
+        df_csv.loc[:last_client_idx, 'Client Address'] = df_csv.loc[:last_client_idx, 'Client Address'].apply(
+            lambda x: 'Noida' if is_blank(x) else x)
+
+    cols_to_fill = ['Group', 'Remark', 'Lead Source', 'Project Interested In']
+    if last_client_idx is not None:
+        df_slice = df_csv.loc[:last_client_idx, :]
+        for col in cols_to_fill:
+            if col in df_slice.columns:
+                df_slice[col] = df_slice[col].ffill()
+        df_csv.loc[:last_client_idx, cols_to_fill] = df_slice[cols_to_fill]
+
+    block_size = 1
+    people = [
+        {"Lead generated by": "Shivam", "lead Assigned to": "shivambhardawaj756@gmail.com"},
+        {"Lead generated by": "Sanghmittra", "lead Assigned to": "gautamsanghmittra475@gmail.com"},
+        {"Lead generated by": "Aditya Tiger", "lead Assigned to": "chintutiger724@gmail.com"},
+        {"Lead generated by": "shubham", "lead Assigned to": "NIKANAVDEEP1@GMAIL.COM"},
+    ]
+
+    total_people = len(people)
+    if last_client_idx is not None:
+        total_clients = last_client_idx + 1
+        if total_clients <= total_people:
+            for i in range(total_clients):
+                person = people[i % total_people]
+                df_csv.at[i, 'Lead generated by'] = person["Lead generated by"]
+                df_csv.at[i, 'lead Assigned to'] = person["lead Assigned to"]
+        else:
+            for i in range(total_clients):
+                person_index = (i // block_size) % total_people
+                person = people[person_index]
+                df_csv.at[i, 'Lead generated by'] = person["Lead generated by"]
+                df_csv.at[i, 'lead Assigned to'] = person["lead Assigned to"]
+
+    blank_unnamed_headers(df_csv)
+
+    date_str = datetime.today().strftime('%Y-%m-%d')
+    base_name = f"coworkingnetwork_{date_str}.csv"
+    save_path = os.path.join(app.config['PROCESSED_FOLDER'], base_name)
+
+    if os.path.exists(save_path):
+        i = 1
+        while True:
+            new_name = f"coworkingnetwork_{date_str}_{i}.csv"
+            new_path = os.path.join(app.config['PROCESSED_FOLDER'], new_name)
+            if not os.path.exists(new_path):
+                save_path = new_path
+                break
+            i += 1
+
+    df_csv.to_csv(save_path, index=False)
+    return save_path
+
+if __name__ == '__main__':
+    app.run(debug=True)
