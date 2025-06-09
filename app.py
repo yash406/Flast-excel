@@ -18,7 +18,7 @@ os.makedirs(PROCESSED_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['PROCESSED_FOLDER'] = PROCESSED_FOLDER
 
-# Helper functions (same as before)
+# Helper functions
 def clean_phone_number(num):
     if pd.isna(num):
         return num
@@ -50,14 +50,12 @@ def blank_unnamed_headers(df):
 @app.route('/', methods=['GET', 'POST'])
 def index():
     if request.method == 'POST':
-        # User uploads multiple Excel files only
         excel_files = request.files.getlist('excel_files')
 
         if not excel_files or all(f.filename == '' for f in excel_files):
             flash("Please upload at least one Excel file!")
             return redirect(request.url)
 
-        # Save uploaded Excel files
         excel_paths = []
         for ef in excel_files:
             if ef and ef.filename != '':
@@ -65,7 +63,6 @@ def index():
                 ef.save(path)
                 excel_paths.append(path)
 
-        # Process the existing CSV + uploaded Excel files
         processed_csv_path = process_files(CSV_PATH, excel_paths)
 
         return send_file(processed_csv_path, as_attachment=True)
@@ -73,14 +70,18 @@ def index():
     return render_template('index.html')
 
 def process_files(csv_file, excel_files):
-    # Same processing code as before, reading csv_file and excel_files paths
     df_csv = pd.read_csv(csv_file, dtype=str)
-    blank_unnamed_headers(df_csv)
-    df_csv['Client Number'] = df_csv.get('Client Number', pd.Series(dtype=str)).apply(clean_phone_number)
+    print("CSV index unique?", df_csv.index.is_unique)
+    df_csv.reset_index(drop=True, inplace=True)
+    print("CSV index unique after reset?", df_csv.index.is_unique)
 
     excel_dataframes = []
     for file in excel_files:
         df_excel = pd.read_excel(file, engine='openpyxl', dtype=str)
+        print(f"Excel {file} index unique?", df_excel.index.is_unique)
+        df_excel.reset_index(drop=True, inplace=True)
+        print(f"Excel {file} index unique after reset?", df_excel.index.is_unique)
+        # rest of code...
         blank_unnamed_headers(df_excel)
         df_mapped = df_excel.rename(columns={
             'full_name': 'Client Name',
@@ -178,5 +179,4 @@ def process_files(csv_file, excel_files):
     return save_path
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', debug=True)
-    
+    app.run(host='0.0.0.0',debug=True)
