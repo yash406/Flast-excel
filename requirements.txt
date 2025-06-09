@@ -1,5 +1,5 @@
 Flask
-pandas==2.8.2
+pandas==2.3.0
 python-dotenv
 openpyxl
 datetime
